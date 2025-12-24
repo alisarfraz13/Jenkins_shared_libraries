@@ -1,21 +1,19 @@
-// File: vars/cleanAndDeploy.groovy
-
 def call(Map config) {
-    def credentialsId = config.credentialsId ?: "dockerhub-creds"
-    def imageName = config.imageName
-    def newBuildTag = config.newBuildTag
-    def containerName = config.containerName ?: "php-app-container"
-    def versionFile = config.versionFile ?: "${WORKSPACE}/.current_version"
+    def credentialsId   = config.credentialsId ?: "dockerhub-creds"
+    def imageName       = config.imageName
+    def newBuildTag     = config.newBuildTag
+    def containerName   = config.containerName ?: "php-app-container"
+    def versionFile     = config.versionFile ?: "${env.WORKSPACE}/.current_version"
     def healthCheckWait = config.healthCheckWait ?: 30
-    
+
     withCredentials([usernamePassword(
         credentialsId: credentialsId,
-        usernameVariable: 'DOCKER_USER'
+        usernameVariable: 'DOCKER_USER',
+        passwordVariable: 'DOCKER_PASS'
     )]) {
         try {
             echo "==================== Deployment Started ===================="
-            
-            // Step 1: Pichla version padho
+
             def previousBuildTag = "none"
             if (fileExists(versionFile)) {
                 previousBuildTag = readFile(versionFile).trim()
@@ -23,26 +21,19 @@ def call(Map config) {
             } else {
                 echo "📋 First deployment - no previous version"
             }
-            
+
             echo "🔍 Debug Info:"
-            echo "   Registry User: ${DOCKER_USER}"
+            echo "   Registry User: ${env.DOCKER_USER}"
             echo "   Image Name: ${imageName}"
             echo "   New Build Tag: ${newBuildTag}"
             echo "   Previous Tag: ${previousBuildTag}"
-            
-            // Step 2: Docker compose down
+
             echo "🛑 Step 1: Stopping containers..."
-            sh """
-                docker compose down || true
-            """
-            
-            // Step 3: Naya container start kro
-            echo "🚀 Step 2: Starting new container with image: ${DOCKER_USER}/${imageName}:${newBuildTag}"
-            sh """
-                docker compose up -d
-            """
-            
-            // Step 4: Health check
+            sh "docker compose down || true"
+
+            echo "🚀 Step 2: Starting new container..."
+            sh "docker compose up -d"
+
             echo "⏳ Step 3: Running health check (max ${healthCheckWait} seconds)..."
             def healthCheckPass = sh(
                 script: """
@@ -62,48 +53,35 @@ def call(Map config) {
                 """,
                 returnStatus: true
             )
-            
+
             if (healthCheckPass == 0) {
                 echo "✅ Step 4: Container health check PASSED!"
-                
-                // Ab safe hai - pichla image delete kro
+
                 if (previousBuildTag != "none") {
-                    echo "🗑️ Step 5: Safely removing old images..."
+                    echo "🗑️ Step 5: Removing old local images..."
                     sh """
-                        echo "Deleting: ${DOCKER_USER}/${imageName}:${previousBuildTag}"
-                        docker rmi ${DOCKER_USER}/${imageName}:${previousBuildTag} -f 2>&1 || echo "DockerHub image deleted or not found"
-                        
-                        echo "Deleting: ${imageName}:${previousBuildTag}"
-                        docker rmi ${imageName}:${previousBuildTag} -f 2>&1 || echo "Local image deleted or not found"
-                        
-                        echo "✅ Old images cleanup complete"
+                        docker rmi ${env.DOCKER_USER}/${imageName}:${previousBuildTag} -f 2>/dev/null || true
+                        docker rmi ${imageName}:${previousBuildTag} -f 2>/dev/null || true
                     """
                 }
-                
-                // Dangling images clean kro
+
                 echo "🧹 Step 6: Cleaning dangling images..."
-                sh """
-                    docker image prune -f
-                """
-                
-                // Current version save kro
+                sh "docker image prune -f"
+
                 echo "💾 Step 7: Saving current version..."
-                sh """
-                    echo '${newBuildTag}' > ${versionFile}
-                """
-                
+                sh "echo '${newBuildTag}' > '${versionFile}'"
+
                 echo "==================== Deployment Completed Successfully ===================="
-                echo "✅ New version deployed: ${DOCKER_USER}/${imageName}:${newBuildTag}"
-                
+                echo "✅ New version deployed: ${env.DOCKER_USER}/${imageName}:${newBuildTag}"
+
             } else {
                 echo "❌ Step 4: Container health check FAILED!"
-                
-                // Rollback
+
                 if (previousBuildTag != "none") {
                     echo "⚠️ Rolling back to previous version: ${previousBuildTag}"
                     sh """
                         docker compose down || true
-                        sed -i "s|image: .*|image: ${DOCKER_USER}/${imageName}:${previousBuildTag}|g" docker-compose.yml
+                        sed -i "s|image: .*|image: ${env.DOCKER_USER}/${imageName}:${previousBuildTag}|g" docker-compose.yml
                         docker compose up -d
                     """
                     error "❌ Deployment FAILED - Rolled back to previous version: ${previousBuildTag}"
@@ -111,7 +89,7 @@ def call(Map config) {
                     error "❌ Deployment FAILED - No previous version available for rollback"
                 }
             }
-            
+
         } catch (Exception e) {
             error "❌ Deployment failed: ${e.message}"
         }
