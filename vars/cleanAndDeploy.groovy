@@ -2,7 +2,7 @@ def call(Map config) {
     def credentialsId = config.credentialsId
     def imageName     = config.imageName
     def newTag        = config.newBuildTag
-    def envPath       = "/home/ubuntu/php-application-with-CICD/.env"
+    def envPath       = "/home/ubuntu/project/php-application-with-CICD/.env"
     
     withCredentials([usernamePassword(credentialsId: credentialsId, usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
         try {
