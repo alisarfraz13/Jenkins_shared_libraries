@@ -1,97 +1,41 @@
 def call(Map config) {
-    def credentialsId   = config.credentialsId ?: "dockerhub-creds"
-    def imageName       = config.imageName
-    def newBuildTag     = config.newBuildTag
-    def containerName   = config.containerName ?: "php-app-container"
-    def versionFile     = config.versionFile ?: "${env.WORKSPACE}/.current_version"
-    def healthCheckWait = config.healthCheckWait ?: 30
-
-    withCredentials([usernamePassword(
-        credentialsId: credentialsId,
-        usernameVariable: 'DOCKER_USER',
-        passwordVariable: 'DOCKER_PASS'
-    )]) {
+    def credentialsId = config.credentialsId
+    def imageName     = config.imageName
+    def newTag        = config.newBuildTag
+    
+    withCredentials([usernamePassword(credentialsId: credentialsId, usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
         try {
-            echo "==================== Deployment Started ===================="
+            def fullImageName = "${env.DOCKER_USER}/${imageName}"
+            
+            echo "🚀 Deployment Started for Tag: ${newTag}"
 
-            def previousBuildTag = "none"
-            if (fileExists(versionFile)) {
-                previousBuildTag = readFile(versionFile).trim()
-                echo "📋 Previous version found: ${previousBuildTag}"
-            } else {
-                echo "📋 First deployment - no previous version"
-            }
+            sh """
+                echo "\$DOCKER_PASS" | docker login -u "\$DOCKER_USER" --password-stdin
+                
+                # Yeh variable docker-compose ko bataye ga k konsi image uthani hai
+                export IMAGE_TAG=${newTag}
+                
+                # SMART DEPLOY: Sirf change hony wala container update hoga
+                docker compose up -d
+            """
+            echo "✅ Deployment Successful"
 
-            echo "🔍 Debug Info:"
-            echo "   Registry User: ${env.DOCKER_USER}"
-            echo "   Image Name: ${imageName}"
-            echo "   New Build Tag: ${newBuildTag}"
-            echo "   Previous Tag: ${previousBuildTag}"
+            // --- CLEANUP SECTION ---
+            echo "🧹 Starting Cleanup..."
+            
+            // 1. Remove dangling images
+            sh "docker image prune -f"
 
-            echo "🛑 Step 1: Stopping containers..."
-            sh "docker compose down || true"
-
-            echo "🚀 Step 2: Starting new container..."
-            sh "docker compose up -d"
-
-            echo "⏳ Step 3: Running health check (max ${healthCheckWait} seconds)..."
-            def healthCheckPass = sh(
-                script: """
-                    for i in \$(seq 1 ${healthCheckWait}); do
-                        if docker ps | grep -q ${containerName}; then
-                            STATUS=\$(docker inspect ${containerName} --format='{{.State.Status}}' 2>/dev/null || echo "none")
-                            if [ "\$STATUS" = "running" ]; then
-                                echo "✅ Container is running"
-                                exit 0
-                            fi
-                        fi
-                        echo "⏳ Waiting... (\$i/${healthCheckWait}s)"
-                        sleep 1
-                    done
-                    echo "❌ Container health check failed"
-                    exit 1
-                """,
-                returnStatus: true
-            )
-
-            if (healthCheckPass == 0) {
-                echo "✅ Step 4: Container health check PASSED!"
-
-                if (previousBuildTag != "none") {
-                    echo "🗑️ Step 5: Removing old local images..."
-                    sh """
-                        docker rmi ${env.DOCKER_USER}/${imageName}:${previousBuildTag} -f 2>/dev/null || true
-                        docker rmi ${imageName}:${previousBuildTag} -f 2>/dev/null || true
-                    """
-                }
-
-                echo "🧹 Step 6: Cleaning dangling images..."
-                sh "docker image prune -f"
-
-                echo "💾 Step 7: Saving current version..."
-                sh "echo '${newBuildTag}' > '${versionFile}'"
-
-                echo "==================== Deployment Completed Successfully ===================="
-                echo "✅ New version deployed: ${env.DOCKER_USER}/${imageName}:${newBuildTag}"
-
-            } else {
-                echo "❌ Step 4: Container health check FAILED!"
-
-                if (previousBuildTag != "none") {
-                    echo "⚠️ Rolling back to previous version: ${previousBuildTag}"
-                    sh """
-                        docker compose down || true
-                        sed -i "s|image: .*|image: ${env.DOCKER_USER}/${imageName}:${previousBuildTag}|g" docker-compose.yml
-                        docker compose up -d
-                    """
-                    error "❌ Deployment FAILED - Rolled back to previous version: ${previousBuildTag}"
-                } else {
-                    error "❌ Deployment FAILED - No previous version available for rollback"
-                }
+            // 2. Remove Previous Build (Current - 1)
+            def prevTag = (newTag.toInteger() - 1).toString()
+            if (newTag.toInteger() > 1) {
+                echo "🗑️ Removing previous version: ${fullImageName}:${prevTag}"
+                sh "docker rmi ${fullImageName}:${prevTag} || true"
             }
 
         } catch (Exception e) {
-            error "❌ Deployment failed: ${e.message}"
+            echo "❌ Deployment Failed: ${e.message}"
+            error "Deployment failed"
         }
     }
 }
